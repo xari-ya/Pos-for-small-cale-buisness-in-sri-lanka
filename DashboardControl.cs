@@ -1,34 +1,46 @@
-﻿using System;
+using System;
 using System.Data.SQLite;
-using System.Drawing; // Added for Color
+using System.Drawing;
 using System.Globalization;
 using System.Linq;
 using System.Text;
 using System.Windows.Forms;
-    
-    
+
 namespace billing_system
 {
+    /// <summary>
+    /// Represents the dashboard user control, which serves as the main landing screen for administrators.
+    /// </summary>
+    /// <remarks>
+    /// This control displays key performance indicators (KPIs) such as today's sales, total inventory, and low stock alerts.
+    /// It also shows a grid of recent transactions. The data is fetched directly from the database upon loading.
+    /// </remarks>
     public partial class DashboardControl : UserControl
     {
         private const int LowStockThreshold = 5;
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="DashboardControl"/> class.
+        /// </summary>
         public DashboardControl()
         {
             InitializeComponent();
             this.Load += DashboardControl_Load;
         }
 
+        /// <summary>
+        /// Handles the Load event for the control.
+        /// </summary>
+        /// <param name="sender">The source of the event.</param>
+        /// <param name="e">An object that contains the event data.</param>
+        /// <remarks>
+        /// When the control loads, it sets a welcome message for the current user, loads the KPIs,
+        /// and populates the grid with recent invoices. It also performs some diagnostic logging.
+        /// </remarks>
         private void DashboardControl_Load(object sender, EventArgs e)
         {
             if (DesignMode) return;
-
             lblWelcomeUser.Text = $"Welcome, {AppSession.CurrentUser?.FullName ?? "Owner"}";
-
-            // This is no longer needed here, as CreateKpiPanel handles the icons
-            // TryApplySystemIcons(); 
-
-            // --- DB path + row counts for quick sanity check ---
             try
             {
                 using var conn = Database.GetConnection();
@@ -40,20 +52,16 @@ namespace billing_system
             {
                 Log("DB open error: " + ex.Message);
             }
-
-            // --- Ensure dock order so KPI row is never hidden by the grid ---
             try
             {
                 if (headerPanel != null) Controls.SetChildIndex(headerPanel, 0);
                 if (kpiTableLayout != null) Controls.SetChildIndex(kpiTableLayout, 1);
                 if (lblRecentTransactions != null) Controls.SetChildIndex(lblRecentTransactions, 2);
                 if (dgvRecentTransactions != null) Controls.SetChildIndex(dgvRecentTransactions, 3);
-
                 headerPanel?.BringToFront();
                 kpiTableLayout?.BringToFront();
                 lblRecentTransactions?.BringToFront();
                 dgvRecentTransactions?.BringToFront();
-
                 if (kpiTableLayout != null)
                 {
                     kpiTableLayout.Visible = true;
@@ -64,30 +72,32 @@ namespace billing_system
             {
                 Log("Dock order fix error: " + ex.Message);
             }
-
             DebugKpiLayout();
-
             LoadKpis();
             LoadRecentInvoices(100);
         }
 
-        // ---------------------------------------------------------------------
-        // KPI loading (with very verbose logging)
-        // ---------------------------------------------------------------------
+        /// <summary>
+        /// Loads and calculates the Key Performance Indicators (KPIs) from the database.
+        /// </summary>
+        /// <remarks>
+        /// This method executes several SQL queries to calculate:
+        /// 1. Today's total sales for paid invoices.
+        /// 2. The total number of items in stock based on stock movements.
+        /// 3. The number of products with low stock levels (below <see cref="LowStockThreshold"/>).
+        /// It then calls <see cref="CreateKpiPanel"/> to update the UI.
+        /// </remarks>
         private void LoadKpis()
         {
             decimal todaysSales = 0m;
             double totalInvRaw = 0.0;
             int totalInventory = 0;
             int attentionNeeded = 0;
-
             try
             {
                 using (var conn = Database.GetConnection())
                 {
                     conn.Open();
-
-                    // 1) Today's Sales (PAID + issued today)
                     const string sqlToday = @"
                         SELECT COALESCE(SUM(grand_total), 0)
                         FROM Invoices
@@ -100,8 +110,6 @@ namespace billing_system
                         Log("KPI#1 raw: " + (v?.ToString() ?? "NULL"));
                         if (v != null && v != DBNull.Value) todaysSales = Convert.ToDecimal(v);
                     }
-
-                    // Optional fallback
                     if (todaysSales == 0m)
                     {
                         string sqlLatestDate = "SELECT MAX(date(issued_at)) FROM Invoices WHERE status='PAID';";
@@ -109,7 +117,6 @@ namespace billing_system
                         var latestDateObj = getDate.ExecuteScalar();
                         var latestDate = latestDateObj?.ToString();
                         Log("Latest PAID invoice date: " + (latestDate ?? "NULL"));
-
                         if (!string.IsNullOrEmpty(latestDate))
                         {
                             string sqlLatestSum = @"
@@ -127,8 +134,6 @@ namespace billing_system
                             }
                         }
                     }
-
-                    // 2) Total Inventory (net sum of movements)
                     const string sqlInv = "SELECT COALESCE(SUM(qty_change), 0) FROM StockMovements;";
                     Log("KPI#2 SQL (Total Inventory): " + sqlInv);
                     using (var cmd = new SQLiteCommand(sqlInv, conn))
@@ -138,8 +143,6 @@ namespace billing_system
                         if (v != null && v != DBNull.Value) totalInvRaw = Convert.ToDouble(v);
                         totalInventory = Convert.ToInt32(Math.Round(totalInvRaw));
                     }
-
-                    // 3) Attention Needed (qty <= threshold)
                     const string sqlAtt = @"
                         SELECT product_id, COALESCE(SUM(qty_change),0) AS qty
                         FROM StockMovements
@@ -162,68 +165,32 @@ namespace billing_system
             {
                 Log("LoadKpis ERROR: " + ex.Message);
             }
-
-            // =================================================================
-            // === FIX: Call the helper method to build the UI for each KPI ===
-            // =================================================================
             var us = new CultureInfo("en-US");
-
-            // Apply system icons *before* creating the panels
             TryApplySystemIcons();
-
-            // Create the "Today's Sales" KPI Panel
-            CreateKpiPanel(
-                panel: panelSales,
-                icon: iconSales,
-                title: lblSalesTitle,
-                value: lblSalesValue,
-                titleText: "Today's Sales",
-                valueText: todaysSales.ToString("C", us),
-                valueColor: Color.FromArgb(0, 123, 255)
-            );
-
-            // Create the "Items in Stock" KPI Panel
-            CreateKpiPanel(
-                panel: panelInventory,
-                icon: iconInventory,
-                title: lblInventoryTitle,
-                value: lblInventoryValue,
-                titleText: "Items in Stock",
-                valueText: totalInventory.ToString("N0"), // Format with commas
-                valueColor: Color.FromArgb(40, 167, 69)
-            );
-
-            // Create the "Low Stock Alerts" KPI Panel
-            CreateKpiPanel(
-                panel: panelAttention,
-                icon: iconAttention,
-                title: lblAttentionTitle,
-                value: lblAttentionValue,
-                titleText: "Low Stock Alerts",
-                valueText: attentionNeeded.ToString(),
-                valueColor: attentionNeeded > 0 ? Color.FromArgb(220, 53, 69) : Color.Gray
-            );
-
+            CreateKpiPanel(panel: panelSales, icon: iconSales, title: lblSalesTitle, value: lblSalesValue, titleText: "Today's Sales", valueText: todaysSales.ToString("C", us), valueColor: Color.FromArgb(0, 123, 255));
+            CreateKpiPanel(panel: panelInventory, icon: iconInventory, title: lblInventoryTitle, value: lblInventoryValue, titleText: "Items in Stock", valueText: totalInventory.ToString("N0"), valueColor: Color.FromArgb(40, 167, 69));
+            CreateKpiPanel(panel: panelAttention, icon: iconAttention, title: lblAttentionTitle, value: lblAttentionValue, titleText: "Low Stock Alerts", valueText: attentionNeeded.ToString(), valueColor: attentionNeeded > 0 ? Color.FromArgb(220, 53, 69) : Color.Gray);
             Log($"KPIs displayed => TodaySales={todaysSales:C}, TotalInventory={totalInventory}, Attention={attentionNeeded}");
-
-            // Final check of layout after updating labels
             DebugKpiLayout();
         }
 
-        // ---------------------------------------------------------------------
-        // Grid: last N invoices (newest first) — Items = SUM(qty)
-        // ---------------------------------------------------------------------
+        /// <summary>
+        /// Loads the most recent invoices into the data grid view.
+        /// </summary>
+        /// <param name="maxRows">The maximum number of invoices to load.</param>
+        /// <remarks>
+        /// This method retrieves a summary of recent invoices, including the total number of items and payment method,
+        /// and populates the <c>dgvRecentTransactions</c> grid.
+        /// </remarks>
         private void LoadRecentInvoices(int maxRows)
         {
             dgvRecentTransactions.Rows.Clear();
             dgvRecentTransactions.AutoGenerateColumns = false;
-
             try
             {
                 using (var conn = Database.GetConnection())
                 {
                     conn.Open();
-
                     string sql = @"
                         SELECT
                             i.invoice_no AS InvoiceNo,
@@ -238,9 +205,7 @@ namespace billing_system
                         FROM Invoices i
                         ORDER BY i.issued_at DESC, i.invoice_no DESC
                         LIMIT @limit;";
-
                     Log("Grid SQL: " + sql);
-
                     using (var cmd = new SQLiteCommand(sql, conn))
                     {
                         cmd.Parameters.AddWithValue("@limit", maxRows);
@@ -248,22 +213,17 @@ namespace billing_system
                         {
                             var us = new CultureInfo("en-US");
                             int rowCounter = 0;
-
                             while (rd.Read())
                             {
                                 string inv = rd["InvoiceNo"]?.ToString() ?? "";
                                 string dtStr = rd["IssuedAt"]?.ToString() ?? "";
-                                // Attempt to parse and format the date for consistency
                                 string formattedDate = DateTime.TryParse(dtStr, out var dt) ? dt.ToString("g") : dtStr;
-
                                 int items = rd["Items"] != DBNull.Value ? Convert.ToInt32(rd["Items"]) : 0;
                                 decimal tot = rd["GrandTotal"] != DBNull.Value ? Convert.ToDecimal(rd["GrandTotal"]) : 0m;
                                 string meth = rd["Method"]?.ToString() ?? "—";
-
                                 dgvRecentTransactions.Rows.Add(inv, formattedDate, items, tot.ToString("C", us), meth);
                                 rowCounter++;
                             }
-
                             Log($"[Grid] Loaded {rowCounter} invoice rows.");
                         }
                     }
@@ -275,28 +235,50 @@ namespace billing_system
             }
         }
 
-        // ---------------------------------------------------------------------
-        // Helpers: icons + DB snapshot + logging utilities
-        // ---------------------------------------------------------------------
+        /// <summary>
+        /// A helper method to create and configure a KPI panel.
+        /// </summary>
+        /// <param name="panel">The main panel for the KPI.</param>
+        /// <param name="icon">The PictureBox for the KPI icon.</param>
+        /// <param name="title">The Label for the KPI title.</param>
+        /// <param name="value">The Label for the KPI value.</param>
+        /// <param name="titleText">The text to display as the title.</param>
+        /// <param name="valueText">The text to display as the value.</param>
+        /// <param name="valueColor">The color to apply to the value text.</param>
+        /// <remarks>
+        /// This method, likely located in the Designer.cs file, populates the text and styles for a single KPI display panel.
+        /// </remarks>
+
+        /// <summary>
+        /// Attempts to apply system icons to the KPI panels.
+        /// </summary>
+        /// <remarks>
+        /// This method sets the images for the KPI icons using standard system icons. It is wrapped in a try-catch block
+        /// to prevent crashes in the designer.
+        /// </remarks>
         private void TryApplySystemIcons()
         {
             try
             {
-                // You can replace these with your own icons from Properties.Resources
-                // e.g., iconSales.Image = Properties.Resources.my_sales_icon;
                 iconSales.Image = SystemIcons.Information.ToBitmap();
                 iconInventory.Image = SystemIcons.Application.ToBitmap();
                 iconAttention.Image = SystemIcons.Warning.ToBitmap();
             }
-            catch { /* ignore if designer crashes */ }
+            catch { }
         }
 
-        // ---------- DEBUG/LOG HELPERS ----------
+        /// <summary>
+        /// Logs a message to the console with a dashboard-specific prefix.
+        /// </summary>
+        /// <param name="msg">The message to log.</param>
         private void Log(string msg)
         {
             try { Console.WriteLine("[Dashboard] " + msg); } catch { }
         }
 
+        /// <summary>
+        /// Logs the current layout state of the KPI panel for debugging.
+        /// </summary>
         private void DebugKpiLayout()
         {
             try
@@ -309,6 +291,11 @@ namespace billing_system
             catch { }
         }
 
+        /// <summary>
+        /// Dumps the row counts of specified tables to the log for debugging.
+        /// </summary>
+        /// <param name="conn">An open <see cref="SQLiteConnection"/>.</param>
+        /// <param name="tables">An array of table names to query.</param>
         private void DumpTableCounts(SQLiteConnection conn, params string[] tables)
         {
             foreach (var t in tables)

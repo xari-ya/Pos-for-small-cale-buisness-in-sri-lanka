@@ -1,13 +1,36 @@
-﻿using System.Data.SQLite;
+using System.Data.SQLite;
 using System.IO;
 
 namespace billing_system
 {
+    /// <summary>
+    /// Manages the application's database, including connection, schema creation, and initial data seeding.
+    /// </summary>
+    /// <remarks>
+    /// This static class is responsible for all low-level database operations. It ensures the database file exists,
+    /// provides connections, and sets up the required tables and indexes on first run.
+    /// </remarks>
     internal static class Database
     {
+        /// <summary>
+        /// The connection string for the SQLite database.
+        /// </summary>
+        /// <remarks>
+        /// This string is constructed using the database path from <see cref="AppConfig.DbPath"/>.
+        /// It specifies the data source, SQLite version, and enables foreign key support.
+        /// </remarks>
         private static readonly string _connStr =
             $"Data Source={AppConfig.DbPath};Version=3;Foreign Keys=True;";
 
+        /// <summary>
+        /// Gets a new connection to the SQLite database.
+        /// </summary>
+        /// <returns>A new <see cref="SQLiteConnection"/> object.</returns>
+        /// <remarks>
+        /// This method checks if the database file specified in <see cref="AppConfig.DbPath"/> exists.
+        /// If it does not, the method creates it before establishing a connection.
+        /// This ensures that repositories like <see cref="UserRepository"/> can always connect to a valid database file.
+        /// </remarks>
         public static SQLiteConnection GetConnection()
         {
             if (!File.Exists(AppConfig.DbPath))
@@ -15,6 +38,14 @@ namespace billing_system
             return new SQLiteConnection(_connStr);
         }
 
+        /// <summary>
+        /// Initializes the database by creating the schema if it does not already exist.
+        /// </summary>
+        /// <remarks>
+        /// This method connects to the database and executes a series of SQL commands to create all necessary tables
+        /// (Users, Categories, Products, Invoices, etc.) and their indexes. It is designed to be run safely on application startup.
+        /// After ensuring the schema is in place, it calls <see cref="SeedAdminIfMissing"/> to create a default administrator account.
+        /// </remarks>
         public static void Initialize()
         {
             using var conn = GetConnection();
@@ -25,7 +56,6 @@ namespace billing_system
                 cmd.CommandText = @"
 PRAGMA foreign_keys = ON;
 
-/* --- Users: UNCHANGED --- */
 CREATE TABLE IF NOT EXISTS Users (
   user_id        INTEGER PRIMARY KEY AUTOINCREMENT,
   username       TEXT NOT NULL UNIQUE,
@@ -38,16 +68,14 @@ CREATE TABLE IF NOT EXISTS Users (
   last_login     TEXT
 );
 
-/* --- Categories: app-generated keys (no AUTOINCREMENT) --- */
 CREATE TABLE IF NOT EXISTS Categories (
-  category_id    TEXT PRIMARY KEY,          -- e.g., CAT-0001 or any string you generate
+  category_id    TEXT PRIMARY KEY,
   name           TEXT NOT NULL UNIQUE,
   description    TEXT
 );
 
-/* --- Products: INTEGER PK you control (no AUTOINCREMENT) --- */
 CREATE TABLE IF NOT EXISTS Products (
-  product_id     INTEGER PRIMARY KEY,       -- you will set this from code
+  product_id     INTEGER PRIMARY KEY,
   sku            TEXT NOT NULL UNIQUE,
   name           TEXT NOT NULL,
   category_id    TEXT,
@@ -59,9 +87,8 @@ CREATE TABLE IF NOT EXISTS Products (
 CREATE INDEX IF NOT EXISTS idx_products_name     ON Products(name);
 CREATE INDEX IF NOT EXISTS idx_products_category ON Products(category_id);
 
-/* --- Invoices: BUSINESS PK --- */
 CREATE TABLE IF NOT EXISTS Invoices (
-  invoice_no     TEXT PRIMARY KEY,          -- yymmddNNNN
+  invoice_no     TEXT PRIMARY KEY,
   issued_at      TEXT NOT NULL DEFAULT (datetime('now')),
   subtotal       REAL NOT NULL DEFAULT 0,
   tax_total      REAL NOT NULL DEFAULT 0,
@@ -73,9 +100,8 @@ CREATE TABLE IF NOT EXISTS Invoices (
 );
 CREATE INDEX IF NOT EXISTS idx_invoices_status ON Invoices(status);
 
-/* --- InvoiceItems: BUSINESS PK + FK by invoice_no --- */
 CREATE TABLE IF NOT EXISTS InvoiceItems (
-  invoice_item_id    TEXT PRIMARY KEY,      -- invoiceNo_seq e.g., 2409300001_0001
+  invoice_item_id    TEXT PRIMARY KEY,
   invoice_no         TEXT NOT NULL,
   product_id         INTEGER NOT NULL,
   qty                REAL NOT NULL CHECK (qty > 0),
@@ -89,9 +115,8 @@ CREATE TABLE IF NOT EXISTS InvoiceItems (
 CREATE INDEX IF NOT EXISTS idx_items_invoice_no ON InvoiceItems(invoice_no);
 CREATE INDEX IF NOT EXISTS idx_items_product    ON InvoiceItems(product_id);
 
-/* --- Payments: BUSINESS PK + FK by invoice_no --- */
 CREATE TABLE IF NOT EXISTS Payments (
-  payment_id    TEXT PRIMARY KEY,           -- P yymmdd NNNN e.g., P2409300001
+  payment_id    TEXT PRIMARY KEY,
   invoice_no    TEXT NOT NULL,
   amount        REAL NOT NULL CHECK (amount > 0),
   method        TEXT NOT NULL,
@@ -102,14 +127,13 @@ CREATE TABLE IF NOT EXISTS Payments (
 );
 CREATE INDEX IF NOT EXISTS idx_payments_invoice_no ON Payments(invoice_no);
 
-/* --- StockMovements: BUSINESS PK + invoice_no reference --- */
 CREATE TABLE IF NOT EXISTS StockMovements (
-  movement_id    TEXT PRIMARY KEY,          -- M yymmdd NNNN e.g., M2409300001
+  movement_id    TEXT PRIMARY KEY,
   product_id     INTEGER NOT NULL,
-  movement_type  TEXT NOT NULL,             -- 'SALE','ADJUST','OPENING_STOCK','RETURN','PURCHASE'
-  qty_change     REAL NOT NULL,             -- negative for sales
+  movement_type  TEXT NOT NULL,
+  qty_change     REAL NOT NULL,
   reason         TEXT,
-  ref_invoice_no TEXT,                       -- nullable
+  ref_invoice_no TEXT,
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (product_id)    REFERENCES Products(product_id),
   FOREIGN KEY (ref_invoice_no)REFERENCES Invoices(invoice_no) ON DELETE SET NULL
@@ -123,6 +147,15 @@ CREATE INDEX IF NOT EXISTS idx_stock_ref_invoiceNo ON StockMovements(ref_invoice
             SeedAdminIfMissing(conn);
         }
 
+        /// <summary>
+        /// Seeds the database with a default administrator account if no users exist.
+        /// </summary>
+        /// <param name="conn">An open <see cref="SQLiteConnection"/> to the database.</param>
+        /// <remarks>
+        /// This method first checks if the 'Users' table is empty. If it is, a new user with the username 'admin'
+        /// and password 'admin' is created. The password is securely hashed using the <see cref="PasswordHasher"/> class.
+        /// This ensures that the application has at least one administrative user upon first launch.
+        /// </remarks>
         private static void SeedAdminIfMissing(SQLiteConnection conn)
         {
             using (var check = conn.CreateCommand())

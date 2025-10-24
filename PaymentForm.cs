@@ -1,7 +1,3 @@
-﻿// Filename: PaymentForm.cs
-// Purpose: Finalize sale: validate payment, delegate DB save to TransactionManager,
-//          generate a receipt image via Python using your JSON, then print it.
-
 using System;
 using System.Diagnostics;
 using System.Drawing;
@@ -15,52 +11,54 @@ using System.Windows.Forms;
 
 namespace billing_system
 {
+    /// <summary>
+    /// Represents the form for processing payments and finalizing transactions.
+    /// </summary>
+    /// <remarks>
+    /// This form is launched from the <see cref="CashierPOSForm"/> to handle the final stage of a sale.
+    /// It validates the payment amount, saves the transaction to the database via the <see cref="TransactionManager"/>,
+    /// and attempts to generate and print a receipt using a Python script.
+    /// </remarks>
     public partial class PaymentForm : Form
     {
         private readonly TransactionManager _transaction;
-
-        // Explicitly use WinForms timer to avoid ambiguity with System.Threading.Timer
         private System.Windows.Forms.Timer _statusTimer;
         private Label _statusBanner;
-
         private string _selectedPaymentMethod = "Cash";
         private readonly CultureInfo _lk = new CultureInfo("en-LK");
-
-        // Python integration (adjust if you place files elsewhere)
-        private static readonly string PythonExe = "python";               // or "py"
+        private static readonly string PythonExe = "python";
         private static readonly string PythonScriptName = "generate_bill.py";
         private static readonly string PythonTemplateName = "bill_template.html";
-
         private const int WM_NCLBUTTONDOWN = 0xA1;
         private const int HT_CAPTION = 0x2;
         [DllImport("user32.dll")] public static extern int SendMessage(IntPtr hWnd, int Msg, int wParam, int lParam);
         [DllImport("user32.dll")] public static extern bool ReleaseCapture();
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="PaymentForm"/> class.
+        /// </summary>
+        /// <param name="transaction">The transaction manager instance containing the bill to be paid.</param>
         public PaymentForm(TransactionManager transaction)
         {
             InitializeComponent();
-
             _transaction = transaction ?? throw new ArgumentNullException(nameof(transaction));
-
             BuildStatusBanner();
             WireEvents();
-
             lblTotalAmount.Text = FormatN2(_transaction.GrandTotal);
             SetCashMode();
-
             Console.WriteLine($"[PAYMENT] Opened PaymentForm | invoice={_transaction.InvoiceNumber} total={_transaction.GrandTotal:N2} cashier={AppSession.CurrentUser?.Username}");
         }
 
+        /// <summary>
+        /// Wires up event handlers for the form's controls.
+        /// </summary>
         private void WireEvents()
         {
-            // Hook the buttons you already wired in Designer
             btnCash.Click += btnCash_Click;
             btnCard.Click += btnCard_Click;
             btnCalculateChange.Click += btnCalculateChange_Click;
             btnConfirm.Click += async (_, __) => await ConfirmAsync();
             linkBackToBill.LinkClicked += linkBackToBill_LinkClicked;
-
-            // Enter in txtAmountPaid triggers calculate (manual-only)
             txtAmountPaid.KeyDown += (s, e) =>
             {
                 if (e.KeyCode == Keys.Enter)
@@ -70,14 +68,13 @@ namespace billing_system
                     CalculateChange();
                 }
             };
-
-            // Close button on the title bar
             btnClose.Click += btnClose_Click;
-
-            // Support dragging the custom title bar
             pnlTitleBar.MouseDown += pnlTitleBar_MouseDown;
         }
 
+        /// <summary>
+        /// Creates and configures the status banner label for displaying messages to the user.
+        /// </summary>
         private void BuildStatusBanner()
         {
             _statusBanner = new Label
@@ -91,7 +88,6 @@ namespace billing_system
             };
             Controls.Add(_statusBanner);
             _statusBanner.BringToFront();
-
             _statusTimer = new System.Windows.Forms.Timer { Interval = 5000 };
             _statusTimer.Tick += (_, __) =>
             {
@@ -100,7 +96,9 @@ namespace billing_system
             };
         }
 
-        // ==== Modes ====
+        /// <summary>
+        /// Sets the UI to cash payment mode.
+        /// </summary>
         private void SetCashMode()
         {
             _selectedPaymentMethod = "Cash";
@@ -111,6 +109,9 @@ namespace billing_system
             txtChangeDue.Text = "0.00";
         }
 
+        /// <summary>
+        /// Sets the UI to card payment mode.
+        /// </summary>
         private void SetCardMode()
         {
             _selectedPaymentMethod = "Card";
@@ -120,9 +121,19 @@ namespace billing_system
             txtChangeDue.Text = "0.00";
         }
 
-        // ==== Formatting / Parsing ====
+        /// <summary>
+        /// Formats a decimal value as a string with two decimal places.
+        /// </summary>
+        /// <param name="value">The value to format.</param>
+        /// <returns>The formatted string.</returns>
         private string FormatN2(decimal value) => value.ToString("N2", _lk);
 
+        /// <summary>
+        /// Tries to parse a string into a decimal amount.
+        /// </summary>
+        /// <param name="input">The string to parse.</param>
+        /// <param name="value">The parsed decimal value.</param>
+        /// <returns><c>true</c> if parsing was successful; otherwise, <c>false</c>.</returns>
         private bool TryParseAmount(string input, out decimal value)
         {
             if (string.IsNullOrWhiteSpace(input)) { value = 0m; return false; }
@@ -136,7 +147,9 @@ namespace billing_system
             return false;
         }
 
-        // ==== Calculate Change (manual only) ====
+        /// <summary>
+        /// Calculates the change due for a cash payment.
+        /// </summary>
         private void CalculateChange()
         {
             if (_selectedPaymentMethod != "Cash")
@@ -144,7 +157,6 @@ namespace billing_system
                 ShowBanner("Change is not applicable for card payments.", false);
                 return;
             }
-
             if (!TryParseAmount(txtAmountPaid.Text, out var amountPaid))
             {
                 ShowBanner("Enter a valid amount (e.g., 1,234.56).", false);
@@ -152,22 +164,21 @@ namespace billing_system
                 txtAmountPaid.SelectAll();
                 return;
             }
-
             var change = amountPaid - _transaction.GrandTotal;
             if (change < 0m) change = 0m;
             change = Math.Round(change, 2, MidpointRounding.ToEven);
-
             txtChangeDue.Text = FormatN2(change);
             Console.WriteLine($"[PAYMENT] Change | paid={amountPaid:N2} total={_transaction.GrandTotal:N2} change={change:N2}");
         }
 
-        // ==== Confirm ====
+        /// <summary>
+        /// Asynchronously confirms the payment, saves the transaction, and prints the receipt.
+        /// </summary>
         private async Task ConfirmAsync()
         {
             try
             {
-                btnConfirm.Enabled = false; // double-submit guard
-
+                btnConfirm.Enabled = false;
                 if (!TryParseAmount(txtAmountPaid.Text, out var amountPaid))
                 {
                     ShowBanner("Invalid amount. Use 1,234.56 format.", false);
@@ -177,9 +188,7 @@ namespace billing_system
                     Console.WriteLine("[PAYMENT] ERROR: Invalid amount format");
                     return;
                 }
-
                 var total = _transaction.GrandTotal;
-
                 if (_selectedPaymentMethod == "Cash")
                 {
                     if (amountPaid < total)
@@ -192,7 +201,7 @@ namespace billing_system
                         return;
                     }
                 }
-                else // Card
+                else
                 {
                     if (amountPaid != total)
                     {
@@ -202,7 +211,6 @@ namespace billing_system
                         return;
                     }
                 }
-
                 Console.WriteLine($"[DB] SaveTransactionToDatabase START | invoice={_transaction.InvoiceNumber} method={_selectedPaymentMethod} amountPaid={amountPaid:N2} items={_transaction.CurrentBillItems.Count} cashier={AppSession.CurrentUser?.Username}");
                 var (success, errorMessage) = _transaction.SaveTransactionToDatabase(_selectedPaymentMethod, amountPaid);
                 if (!success)
@@ -213,10 +221,8 @@ namespace billing_system
                     return;
                 }
                 Console.WriteLine("[DB] SUCCESS: Transaction committed");
-
                 var printed = await Task.Run(() => TryGenerateAndPrintReceiptSafe(amountPaid));
                 if (!printed) Console.WriteLine("[PRINT] WARNING: Receipt generation/printing failed");
-
                 ShowBanner("Payment successful. Finishing up…", true);
                 await Task.Delay(5000);
                 this.DialogResult = DialogResult.OK;
@@ -230,7 +236,11 @@ namespace billing_system
             }
         }
 
-        // ==== JSON payload (manual writer: no extra packages needed) ====
+        /// <summary>
+        /// Escapes a string for use in a JSON payload.
+        /// </summary>
+        /// <param name="s">The string to escape.</param>
+        /// <returns>The escaped string.</returns>
         private string EscapeJson(string s)
         {
             if (s == null) return "";
@@ -255,21 +265,22 @@ namespace billing_system
             return sb.ToString();
         }
 
+        /// <summary>
+        /// Writes the transaction details to a JSON file for receipt generation.
+        /// </summary>
+        /// <param name="amountPaid">The amount paid by the customer.</param>
+        /// <returns>The path to the generated JSON file.</returns>
         private string WriteReceiptJson(decimal amountPaid)
         {
-            // Map to your actual BillItem shape:
-            // BillItem.ProductDetails.Name, BillItem.UnitPriceAtSale, BillItem.Quantity, BillItem.LineTotal
             var jsonPath = Path.Combine(Path.GetTempPath(), $"invoice_{_transaction.InvoiceNumber}_{Guid.NewGuid():N}.json");
             var sb = new StringBuilder();
             sb.Append('{');
-
             sb.Append("\"invoice_id\":\"").Append(EscapeJson(_transaction.InvoiceNumber?.ToString() ?? "")).Append("\",");
             sb.Append("\"date_time\":\"").Append(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")).Append("\",");
             sb.Append("\"cashier\":\"").Append(EscapeJson(AppSession.CurrentUser?.Username ?? "unknown")).Append("\",");
             sb.Append("\"payment_method\":\"").Append(EscapeJson(_selectedPaymentMethod)).Append("\",");
             sb.Append("\"amount_paid\":").Append(amountPaid.ToString("0.00", CultureInfo.InvariantCulture)).Append(',');
             sb.Append("\"grand_total\":").Append(_transaction.GrandTotal.ToString("0.00", CultureInfo.InvariantCulture)).Append(',');
-
             sb.Append("\"items\":[");
             for (int i = 0; i < _transaction.CurrentBillItems.Count; i++)
             {
@@ -278,7 +289,6 @@ namespace billing_system
                 var unit = it.UnitPriceAtSale;
                 var qty = it.Quantity;
                 var line = Math.Round(it.LineTotal, 2, MidpointRounding.ToEven);
-
                 if (i > 0) sb.Append(',');
                 sb.Append('{');
                 sb.Append("\"name\":\"").Append(EscapeJson(name)).Append("\",");
@@ -288,15 +298,17 @@ namespace billing_system
                 sb.Append('}');
             }
             sb.Append(']');
-
             sb.Append('}');
-
             File.WriteAllText(jsonPath, sb.ToString(), new UTF8Encoding(false));
             Console.WriteLine($"[PRINT] JSON written: {jsonPath}");
             return jsonPath;
         }
 
-        // ==== Python + Print ====
+        /// <summary>
+        /// Tries to generate and print a receipt by calling a Python script.
+        /// </summary>
+        /// <param name="amountPaid">The amount paid by the customer.</param>
+        /// <returns><c>true</c> if the receipt was generated and printed successfully; otherwise, <c>false</c>.</returns>
         private bool TryGenerateAndPrintReceiptSafe(decimal amountPaid)
         {
             try
@@ -304,20 +316,16 @@ namespace billing_system
                 var baseDir = AppDomain.CurrentDomain.BaseDirectory;
                 var scriptPath = Path.Combine(baseDir, PythonScriptName);
                 var templatePath = Path.Combine(baseDir, PythonTemplateName);
-
                 Console.WriteLine($"[PRINT] script={scriptPath}");
                 Console.WriteLine($"[PRINT] template={templatePath}");
-
                 if (!File.Exists(scriptPath) || !File.Exists(templatePath))
                 {
                     Console.WriteLine("[PRINT] Missing python script/template. Skipping.");
                     return false;
                 }
-
                 var jsonPath = WriteReceiptJson(amountPaid);
                 var outPng = Path.Combine(Path.GetTempPath(), $"invoice_{_transaction.InvoiceNumber}_{Guid.NewGuid():N}.png");
                 Console.WriteLine($"[PRINT] out={outPng}");
-
                 var psi = new ProcessStartInfo
                 {
                     FileName = PythonExe,
@@ -328,30 +336,25 @@ namespace billing_system
                     WorkingDirectory = baseDir,
                     CreateNoWindow = true
                 };
-
                 using (var proc = Process.Start(psi))
                 {
                     string stdOut = proc.StandardOutput.ReadToEnd();
                     string stdErr = proc.StandardError.ReadToEnd();
                     proc.WaitForExit();
-
                     Console.WriteLine("[PRINT][python][stdout] " + stdOut);
                     if (!string.IsNullOrWhiteSpace(stdErr))
                         Console.WriteLine("[PRINT][python][stderr] " + stdErr);
-
                     if (proc.ExitCode != 0)
                     {
                         Console.WriteLine($"[PRINT] Python exit code={proc.ExitCode}");
                         return false;
                     }
                 }
-
                 if (!File.Exists(outPng))
                 {
                     Console.WriteLine("[PRINT] Python ran, but image not found.");
                     return false;
                 }
-
                 using (var img = Image.FromFile(outPng))
                 using (var pd = new PrintDocument())
                 {
@@ -367,11 +370,9 @@ namespace billing_system
                         e.Graphics.DrawImage(img, new Rectangle(x, y, w, h));
                         e.HasMorePages = false;
                     };
-
                     Console.WriteLine("[PRINT] Sending to default printer…");
                     pd.Print();
                 }
-
                 Console.WriteLine("[PRINT] SUCCESS");
                 return true;
             }
@@ -382,18 +383,20 @@ namespace billing_system
             }
         }
 
-        // ==== Inline banner ====
+        /// <summary>
+        /// Displays a status banner with a message.
+        /// </summary>
+        /// <param name="message">The message to display.</param>
+        /// <param name="success">A value indicating whether the message represents a success or an error.</param>
         private void ShowBanner(string message, bool success)
         {
             _statusBanner.Text = message;
             _statusBanner.BackColor = success ? Color.FromArgb(30, 135, 76) : Color.FromArgb(200, 39, 55);
             _statusBanner.Visible = true;
-
             _statusTimer.Stop();
             _statusTimer.Start();
         }
 
-        // ==== Event stubs that your Designer is already wiring ====
         private void btnCash_Click(object sender, EventArgs e)
         {
             Console.WriteLine("[PAYMENT] Method -> Cash");

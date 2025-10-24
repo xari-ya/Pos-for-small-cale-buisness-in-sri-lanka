@@ -1,6 +1,3 @@
-﻿// -----------------------------------------------------------------------------
-// InventoryControl.cs  — Inactive indicator + “Active” column (EXPLAINED)
-// -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
 using System.Data;
@@ -12,18 +9,26 @@ using System.Windows.Forms;
 
 namespace billing_system
 {
+    /// <summary>
+    /// Represents the user control for managing the product inventory.
+    /// </summary>
+    /// <remarks>
+    /// This control displays a list of all products (both active and inactive) in a data grid. It provides functionalities
+    /// for adding, editing, and soft-deleting products. It also allows users to filter the product list by name/SKU,
+    /// category, and stock level.
+    /// </remarks>
     public partial class InventoryControl : UserControl
     {
         private DataTable _dt;
         private DataView _view;
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="InventoryControl"/> class.
+        /// </summary>
         public InventoryControl()
         {
             InitializeComponent();
-
-            // Retitle the last column at runtime (Designer kept intact)
             dataGridViewTextBoxColumn6.HeaderText = "Active";
-
             WireEvents();
             PrepareGridBinding();
             TryLoadCategories();
@@ -31,6 +36,13 @@ namespace billing_system
             ApplyFilters();
         }
 
+        /// <summary>
+        /// Prepares the data grid view for data binding.
+        /// </summary>
+        /// <remarks>
+        /// This method configures the data grid columns, mapping them to the properties of the underlying data source.
+        /// It also sets up an event handler to style rows based on their active status after data binding is complete.
+        /// </remarks>
         private void PrepareGridBinding()
         {
             dgvProducts.AutoGenerateColumns = false;
@@ -39,45 +51,40 @@ namespace billing_system
             dataGridViewTextBoxColumn3.DataPropertyName = "Category";
             dataGridViewTextBoxColumn4.DataPropertyName = "Price";
             dataGridViewTextBoxColumn5.DataPropertyName = "Stock";
-
-            // Reuse your “Reorder” column as an “Active” column → binds to IsActive (Yes/No)
             dataGridViewTextBoxColumn6.DataPropertyName = "IsActive";
             dataGridViewTextBoxColumn6.HeaderText = "Active";
-
-            // Style after data binds to mark inactive rows
             dgvProducts.DataBindingComplete += DgvProducts_DataBindingComplete;
             dgvProducts.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
             dgvProducts.MultiSelect = false;
         }
 
+        /// <summary>
+        /// Wires up event handlers for the controls on the form.
+        /// </summary>
+        /// <remarks>
+        /// This method attaches event handlers for filter controls (search text, category, min stock) and for the
+        /// Add, Edit, and Delete buttons, which handle the core CRUD operations for products.
+        /// </remarks>
         private void WireEvents()
         {
             txtSearch.TextChanged += (s, e) => ApplyFilters();
             cbCategory.SelectedIndexChanged += (s, e) => ApplyFilters();
             numMinStock.ValueChanged += (s, e) => ApplyFilters();
 
-            // ADD
             btnAdd.Click += (s, e) =>
             {
                 using var dlg = new ProductDetailForm();
                 if (dlg.ShowDialog(this) != DialogResult.OK) return;
-
                 try
                 {
                     using var conn = Database.GetConnection();
                     conn.Open();
                     using var tx = conn.BeginTransaction();
-
-                    long pid = ProductRepository.Insert(conn, tx,
-                        dlg.Result.Sku, dlg.Result.Name, dlg.Result.CategoryId,
-                        dlg.Result.UnitPrice, 1);
-
+                    long pid = ProductRepository.Insert(conn, tx, dlg.Result.Sku, dlg.Result.Name, dlg.Result.CategoryId, dlg.Result.UnitPrice, 1);
                     if (dlg.Result.OpeningQty > 0)
                     {
-                        StockMovementRepository.Insert(conn, tx, pid,
-                            "OPENING_STOCK", dlg.Result.OpeningQty, "Initial load", null);
+                        StockMovementRepository.Insert(conn, tx, pid, "OPENING_STOCK", dlg.Result.OpeningQty, "Initial load", null);
                     }
-
                     tx.Commit();
                     Console.WriteLine($"[Inventory/Add] OK sku={dlg.Result.Sku} pid={pid}");
                     RefreshData();
@@ -89,27 +96,20 @@ namespace billing_system
                 }
             };
 
-            // EDIT
             btnEdit.Click += (s, e) =>
             {
                 if (dgvProducts.CurrentRow == null) return;
                 string sku = dgvProducts.CurrentRow.Cells["dataGridViewTextBoxColumn1"].Value?.ToString() ?? "";
                 if (string.IsNullOrWhiteSpace(sku)) return;
-
                 try
                 {
                     using var conn = Database.GetConnection();
                     conn.Open();
                     var rec = ProductRepository.GetBySku(conn, sku);
                     if (rec == null) { Console.WriteLine("[Inventory/Edit] Not found: " + sku); return; }
-
                     using var dlg = new ProductDetailForm(rec.Value.productId, rec.Value.sku, rec.Value.name, rec.Value.categoryId, rec.Value.price);
                     if (dlg.ShowDialog(this) != DialogResult.OK) return;
-
-                    ProductRepository.Update(conn, null, rec.Value.productId,
-                        dlg.Result.Sku, dlg.Result.Name, dlg.Result.CategoryId,
-                        dlg.Result.UnitPrice, 1);
-
+                    ProductRepository.Update(conn, null, rec.Value.productId, dlg.Result.Sku, dlg.Result.Name, dlg.Result.CategoryId, dlg.Result.UnitPrice, 1);
                     Console.WriteLine($"[Inventory/Edit] OK sku={dlg.Result.Sku} pid={rec.Value.productId}");
                     RefreshData();
                     ApplyFilters();
@@ -120,20 +120,17 @@ namespace billing_system
                 }
             };
 
-            // DELETE (Soft → is_active = 0)
             btnDelete.Click += (s, e) =>
             {
                 if (dgvProducts.CurrentRow == null) return;
                 string sku = dgvProducts.CurrentRow.Cells["dataGridViewTextBoxColumn1"].Value?.ToString() ?? "";
                 if (string.IsNullOrWhiteSpace(sku)) return;
-
                 try
                 {
                     using var conn = Database.GetConnection();
                     conn.Open();
                     var rec = ProductRepository.GetBySku(conn, sku);
                     if (rec == null) { Console.WriteLine("[Inventory/Delete] Not found: " + sku); return; }
-
                     ProductRepository.SoftDelete(conn, null, rec.Value.productId);
                     Console.WriteLine($"[Inventory/Delete] Soft-deleted sku={sku} pid={rec.Value.productId}");
                     RefreshData();
@@ -146,6 +143,9 @@ namespace billing_system
             };
         }
 
+        /// <summary>
+        /// Loads product categories from the database and populates the category filter combo box.
+        /// </summary>
         private void TryLoadCategories()
         {
             cbCategory.Items.Clear();
@@ -166,17 +166,22 @@ namespace billing_system
             cbCategory.SelectedIndex = 0;
         }
 
+        /// <summary>
+        /// Refreshes the product data from the database.
+        /// </summary>
+        /// <remarks>
+        /// This method queries the database to get a list of all products, including their calculated stock levels.
+        /// It populates an in-memory <see cref="DataTable"/> which is then used as the data source for the grid.
+        /// </remarks>
         private void RefreshData()
         {
-            // Note: Replaced "Reorder" with "IsActive" column
             _dt = new DataTable();
             _dt.Columns.Add("SKU", typeof(string));
             _dt.Columns.Add("Name", typeof(string));
             _dt.Columns.Add("Category", typeof(string));
             _dt.Columns.Add("Price", typeof(decimal));
             _dt.Columns.Add("Stock", typeof(int));
-            _dt.Columns.Add("IsActive", typeof(string)); // "Yes"/"No" for display
-
+            _dt.Columns.Add("IsActive", typeof(string));
             try
             {
                 using var conn = Database.GetConnection();
@@ -184,8 +189,6 @@ namespace billing_system
                 VerifyTableExists(conn, "Products");
                 VerifyTableExists(conn, "StockMovements");
                 VerifyTableExists(conn, "Categories");
-
-                // IMPORTANT: no filter on is_active → we show both active/inactive
                 string sql = @"
                     SELECT
                         p.product_id,
@@ -212,22 +215,25 @@ namespace billing_system
                     decimal price = Convert.ToDecimal(rd["unit_price"]);
                     int stock = Convert.ToInt32(rd["stock"]);
                     bool isActive = Convert.ToInt32(rd["is_active"]) == 1;
-
                     _dt.Rows.Add(sku, name, cat, price, stock, isActive ? "Yes" : "No");
                 }
-
                 Console.WriteLine($"[Inventory] Loaded {_dt.Rows.Count} products (active + inactive).");
             }
             catch (Exception ex)
             {
                 Console.WriteLine("[Inventory] ERROR while loading products: " + ex);
             }
-
             _view = new DataView(_dt);
             dgvProducts.DataSource = _view;
             UpdateSummary();
         }
 
+        /// <summary>
+        /// Verifies that a specified table exists in the database.
+        /// </summary>
+        /// <param name="conn">An open <see cref="SQLiteConnection"/>.</param>
+        /// <param name="tableName">The name of the table to verify.</param>
+        /// <exception cref="InvalidOperationException">Thrown if the table does not exist.</exception>
         private void VerifyTableExists(SQLiteConnection conn, string tableName)
         {
             using var cmd = new SQLiteCommand("SELECT name FROM sqlite_master WHERE type='table' AND name=@t;", conn);
@@ -236,60 +242,72 @@ namespace billing_system
             if (r == null) throw new InvalidOperationException($"Table '{tableName}' is missing.");
         }
 
+        /// <summary>
+        /// Applies the current filter settings to the data grid view.
+        /// </summary>
+        /// <remarks>
+        /// This method constructs a filter expression based on the values in the search box, category combo box,
+        /// and minimum stock numeric control. The filter is then applied to the <see cref="DataView"/>.
+        /// </remarks>
         private void ApplyFilters()
         {
             if (_view == null) return;
             string esc(string s) => s.Replace("'", "''");
             var parts = new List<string>();
-
             var search = txtSearch.Text.Trim();
             if (!string.IsNullOrEmpty(search))
                 parts.Add($"(SKU LIKE '%{esc(search)}%' OR Name LIKE '%{esc(search)}%')");
-
             if (cbCategory.SelectedIndex > 0)
             {
                 string cat = esc(cbCategory.SelectedItem?.ToString() ?? "");
                 parts.Add($"Category = '{cat}'");
             }
-
             if (numMinStock.Value > 0)
                 parts.Add($"Stock >= {numMinStock.Value}");
-
             _view.RowFilter = parts.Count == 0 ? "" : string.Join(" AND ", parts);
             UpdateSummary();
         }
 
+        /// <summary>
+        /// Updates the summary labels with statistics about the currently displayed products.
+        /// </summary>
+        /// <remarks>
+        /// This method calculates and displays the total number of active products, the count of low stock and out of stock items,
+        /// and the total value of the inventory, based only on the active and visible rows in the grid.
+        /// </remarks>
         private void UpdateSummary()
         {
             var culture = new CultureInfo("en-LK");
             culture.NumberFormat.CurrencySymbol = "Rs.";
             culture.NumberFormat.CurrencyPositivePattern = 2;
-
-            // Count/Value over ACTIVE rows only
             var visible = _view.Cast<DataRowView>().ToList();
             var activeRows = visible.Where(r => string.Equals(r.Row.Field<string>("IsActive"), "Yes", StringComparison.OrdinalIgnoreCase)).ToList();
-
             int total = activeRows.Count;
             int low = activeRows.Count(r => r.Row.Field<int>("Stock") <= 5);
             int oos = activeRows.Count(r => r.Row.Field<int>("Stock") <= 0);
             decimal value = activeRows.Sum(r => r.Row.Field<decimal>("Price") * r.Row.Field<int>("Stock"));
-
             lblTotalProducts.Text = $"Total Products: {total}";
             lblLowStock.Text = $"Low Stock: {low}";
             lblOutOfStock.Text = $"Out of Stock: {oos}";
             lblInventoryValue.Text = $"Inventory Value: {value.ToString("C2", culture)}";
-
             Console.WriteLine($"[Inventory Summary] (Active only) Total={total}, Low={low}, Out={oos}, Value={value}");
         }
 
+        /// <summary>
+        /// Handles the DataBindingComplete event for the data grid view.
+        /// </summary>
+        /// <param name="sender">The source of the event.</param>
+        /// <param name="e">An object that contains the event data.</param>
+        /// <remarks>
+        /// This method is used to apply custom styling to the rows after data has been bound.
+        /// It iterates through the rows and changes the foreground and background color for inactive products.
+        /// </remarks>
         private void DgvProducts_DataBindingComplete(object? sender, DataGridViewBindingCompleteEventArgs e)
         {
-            // Grey out inactive rows (no custom painting)
             foreach (DataGridViewRow row in dgvProducts.Rows)
             {
                 var activeCell = row.Cells[dataGridViewTextBoxColumn6.Index]?.Value?.ToString() ?? "Yes";
                 bool isActive = activeCell.Equals("Yes", StringComparison.OrdinalIgnoreCase);
-
                 if (!isActive)
                 {
                     row.DefaultCellStyle.ForeColor = Color.Gray;
@@ -297,7 +315,6 @@ namespace billing_system
                 }
                 else
                 {
-                    // ensure active rows use defaults
                     row.DefaultCellStyle.ForeColor = dgvProducts.DefaultCellStyle.ForeColor;
                     row.DefaultCellStyle.BackColor = dgvProducts.DefaultCellStyle.BackColor;
                 }
